@@ -27,7 +27,10 @@
 
 jrawMonitorID monitor;
 jrawMonitorID monitor_completed;
-
+static jrawMonitorID events_monitor = NULL;
+static const int MAX_EVENTS_TO_PROCESS = 20;
+static int vthread_unmount_count = 0;
+static int vthread_mount_count = 0;
 jvmtiEnv *jvmti_env;
 
 
@@ -67,9 +70,72 @@ JNIEXPORT void JNICALL
 Java_WaitNotifySuspendedVThreadTask_notifyRawMonitors(JNIEnv *jni, jclass klass, jthread thread) {
   LOG("Main thread: suspending virtual and carrier threads\n");
 
-  check_jvmti_status(jni, jvmti_env->SuspendThread(thread), "SuspendThread thread");
+  //check_jvmti_status(jni, jvmti_env->SuspendThread(thread), "SuspendThread thread");
   jthread cthread = get_carrier_thread(jvmti_env, jni, thread);
-  check_jvmti_status(jni, jvmti_env->SuspendThread(cthread), "SuspendThread thread");
+  //check_jvmti_status(jni, jvmti_env->SuspendThread(cthread), "SuspendThread thread");
+
+  jint cstate = 0;
+  jint vstate = 0;
+  jvmtiError err;
+
+  err = jvmti_env->GetThreadState(cthread, &cstate);
+  err = jvmti_env->GetThreadState(thread, &vstate);
+  LOG("Before start ----> carrier threads state : %x and virtual threads state : %x\n",cstate,vstate)
+
+  if(1)
+  {	  
+      LOG("suspend carrier thread: %d\n",jvmti_env->SuspendThread(cthread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %x and virtual threads state : %x\n",cstate,vstate);
+
+      LOG("suspend virtual thread: %d\n", jvmti_env->SuspendThread(thread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %x and virtual threads state : %x\n",cstate,vstate);
+
+      LOG("waiting for 10 seconds before resume\n");
+      sleep(5);
+
+      LOG("resume virtual thread: %d\n",jvmti_env->ResumeThread(thread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %x and virtual threads state : %x\n",cstate,vstate);
+
+      LOG("resume carrier thread: %d\n",jvmti_env->ResumeThread(cthread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %x and virtual threads state : %x\n",cstate,vstate);
+  }	   
+
+  if(0)
+  {
+      LOG("suspend virtual thread: %d\n",jvmti_env->SuspendThread(thread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %d and virtual threads state : %d\n",cstate,vstate);
+
+
+      LOG("suspend carrier thread: %d\n", jvmti_env->SuspendThread(cthread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %d and virtual threads state : %d\n",cstate,vstate);
+
+      LOG("waiting for 5 seconds before resume\n");
+      sleep(5);
+
+      LOG("resume carrier thread: %d\n",jvmti_env->ResumeThread(cthread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %d and virtual threads state : %d\n",cstate,vstate);
+
+      LOG("resume virtual thread: %d\n",jvmti_env->ResumeThread(thread));
+      err = jvmti_env->GetThreadState(cthread, &cstate);
+      err = jvmti_env->GetThreadState(thread, &vstate);
+      LOG("carrier threads state : %d and virtual threads state : %d\n",cstate,vstate);
+  }
+
+  //exit(0);
 
   {
     RawMonitorLocker rml(jvmti_env, jni, monitor);
@@ -79,16 +145,18 @@ Java_WaitNotifySuspendedVThreadTask_notifyRawMonitors(JNIEnv *jni, jclass klass,
   }
 
   RawMonitorLocker completed(jvmti_env, jni, monitor_completed);
+  
+  //LOG("Main thread: resuming virtual thread\n");
+  //check_jvmti_status(jni, jvmti_env->ResumeThread(thread), "ResumeThread thread");
 
-  LOG("Main thread: resuming virtual thread\n");
-  check_jvmti_status(jni, jvmti_env->ResumeThread(thread), "ResumeThread thread");
+  //LOG("Main thread: before monitor_completed.wait()\n");
+  //completed.wait();
+  //LOG("Main thread: after monitor_completed.wait()\n");
 
-  LOG("Main thread: before monitor_completed.wait()\n");
-  completed.wait();
-  LOG("Main thread: after monitor_completed.wait()\n");
+  //  LOG("Main thread: resuming carrier thread\n");
+  //  check_jvmti_status(jni, jvmti_env->ResumeThread(cthread), "ResumeThread cthread");
 
-  LOG("Main thread: resuming carrier thread\n");
-  check_jvmti_status(jni, jvmti_env->ResumeThread(cthread), "ResumeThread cthread");
+  LOG("***********TEST CASE FINISH************\n");
 }
 
 } // extern "C"
@@ -126,6 +194,75 @@ Breakpoint(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread,
 
 /* ============================================================================= */
 
+static void
+processVThreadEvent(jvmtiEnv *jvmti, JNIEnv *jni, jthread vthread, const char *event_name) {
+  static int vthread_events_cnt = 0;
+  
+  char* tname = get_thread_name(jvmti, jni, vthread);
+
+  printf("Inside the fun processVThreadEvent vthread %p\n",vthread);
+
+  if (strcmp(event_name, "VirtualThreadEnd") != 0 &&
+      strcmp(event_name, "VirtualThreadStart")  != 0) {
+    if (vthread_events_cnt++ > MAX_EVENTS_TO_PROCESS) {
+      return; // No need to test all events
+    }
+  }
+  //LOG("processVThreadEvent: event: %s, thread: %s\n", event_name, tname);
+
+ }
+
+static void JNICALL
+VirtualThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread vthread) {
+  printf("inside the fun VirtualThreadStart\n");
+  RawMonitorLocker rml(jvmti, jni, events_monitor);
+  processVThreadEvent(jvmti, jni, vthread, "VirtualThreadStart");
+}
+
+static void JNICALL
+VirtualThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread vthread) {
+  printf("inside the fun VirtualThreadEnd\n");
+  RawMonitorLocker rml(jvmti, jni, events_monitor);
+  processVThreadEvent(jvmti, jni, vthread, "VirtualThreadEnd");
+}
+
+// Parameters: (jvmtiEnv *jvmti, JNIEnv* jni, jthread thread)
+static void JNICALL
+VirtualThreadMount(jvmtiEnv *jvmti, ...) {
+  va_list ap;
+  JNIEnv* jni = NULL;
+  jthread thread = NULL;
+
+  printf("Inside the fun VirtualThread-Mount\n");
+
+  va_start(ap, jvmti);
+  jni = va_arg(ap, JNIEnv*);
+  thread = va_arg(ap, jthread);
+  va_end(ap);
+
+  RawMonitorLocker rml(jvmti, jni, events_monitor);
+  vthread_mount_count++;
+  processVThreadEvent(jvmti, jni, thread, "VirtualThreadMount");
+}
+
+// Parameters: (jvmtiEnv *jvmti, JNIEnv* jni, jthread thread)
+static void JNICALL
+VirtualThreadUnmount(jvmtiEnv *jvmti, ...) {
+  va_list ap;
+  JNIEnv* jni = NULL;
+  jthread thread = NULL;
+
+  printf("Inside the fun VirtualThread-Unmount\n");
+
+  va_start(ap, jvmti);
+  jni = va_arg(ap, JNIEnv*);
+  thread = va_arg(ap, jthread);
+  va_end(ap);
+  RawMonitorLocker rml(jvmti, jni, events_monitor);
+  vthread_unmount_count++;
+  processVThreadEvent(jvmti, jni, thread, "VirtualThreadUnmount");
+}
+
 JNIEXPORT jint JNICALL
 Agent_OnLoad(JavaVM *jvm, char *options, void *reserved) {
   jvmtiEnv * jvmti = NULL;
@@ -150,32 +287,84 @@ Agent_OnLoad(JavaVM *jvm, char *options, void *reserved) {
   caps.can_support_virtual_threads = 1;
   caps.can_generate_breakpoint_events = 1;
   caps.can_suspend = 1;
+  caps.can_access_local_variables = 1;
 
   err = jvmti->AddCapabilities(&caps);
   if (err != JVMTI_ERROR_NONE) {
-    LOG("(AddCapabilities) unexpected error: %s (%d)\n",
-           TranslateError(err), err);
-    return JNI_ERR;
+     LOG("(AddCapabilities) unexpected error: %s (%d)\n",
+            TranslateError(err), err);
+     return JNI_ERR;
   }
 
   err = jvmti->GetCapabilities(&caps);
   if (err != JVMTI_ERROR_NONE) {
     LOG("(GetCapabilities) unexpected error: %s (%d)\n",
-           TranslateError(err), err);
+          TranslateError(err), err);
     return JNI_ERR;
   }
 
-  /* set event callback */
+  /*set event callback */
   LOG("setting event callbacks ...\n");
-  (void) memset(&callbacks, 0, sizeof(callbacks));
+  (void) memset(&callbacks, 0, sizeof(jvmtiEventCallbacks));
   callbacks.Breakpoint = &Breakpoint;
+  callbacks.VirtualThreadStart = &VirtualThreadStart;
+  callbacks.VirtualThreadEnd = &VirtualThreadEnd;
 
-  err = jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
+  err = jvmti->SetEventCallbacks(&callbacks, sizeof(jvmtiEventCallbacks));
   if (err != JVMTI_ERROR_NONE) {
     LOG("(SetEventCallbacks) unexpected error: %s (%d)\n",
            TranslateError(err), err);
     return JNI_ERR;
+  } 
+  
+  //memset(&callbacks, 0, sizeof(callbacks));
+  //callbacks.VirtualThreadStart = &VirtualThreadStart;
+  //callbacks.VirtualThreadEnd = &VirtualThreadEnd;
+
+  err = set_ext_event_callback(jvmti, "VirtualThreadMount", VirtualThreadMount);
+  if (err != JVMTI_ERROR_NONE) {
+    LOG("Agent_OnLoad: Error in JVMTI SetExtEventCallback for VirtualThreadMount: %s(%d)\n",
+           TranslateError(err), err);
+    return JNI_ERR;
   }
+
+  err = set_ext_event_callback(jvmti, "VirtualThreadUnmount", VirtualThreadUnmount);
+  if (err != JVMTI_ERROR_NONE) {
+    LOG("Agent_OnLoad: Error in JVMTI SetExtEventCallback for VirtualThreadUnmount: %s(%d)\n",
+           TranslateError(err), err);
+    return JNI_ERR;
+  }
+
+  //memset(&caps, 0, sizeof(caps));
+  //caps.can_support_virtual_threads = 1;
+  //caps.can_access_local_variables = 1;
+  //caps.can_suspend = 1;
+
+  // err = jvmti->AddCapabilities(&caps);
+  // if (err != JVMTI_ERROR_NONE) {
+  //   LOG("error in JVMTI AddCapabilities: %d\n", err);
+  //   return JNI_ERR;
+  // }
+
+  // err = jvmti->SetEventCallbacks(&callbacks, sizeof(jvmtiEventCallbacks));
+  // if (err != JVMTI_ERROR_NONE) {
+  //   LOG("error in JVMTI SetEventCallbacks: %d\n", err);
+  //   return JNI_ERR;
+  // }
+
+  err = set_ext_event_notification_mode(jvmti, JVMTI_ENABLE, "VirtualThreadMount", NULL);
+  if (err != JVMTI_ERROR_NONE) {
+    LOG("error in JVMTI SetEventNotificationMode: %d\n", err);
+    return JNI_ERR;
+  }
+
+  err = set_ext_event_notification_mode(jvmti, JVMTI_ENABLE, "VirtualThreadUnmount", NULL);
+  if (err != JVMTI_ERROR_NONE) {
+    LOG("error in JVMTI SetEventNotificationMode: %d\n", err);
+    return JNI_ERR;
+  }
+
+  events_monitor = create_raw_monitor(jvmti, "Events Monitor");
 
   return JNI_OK;
 }
