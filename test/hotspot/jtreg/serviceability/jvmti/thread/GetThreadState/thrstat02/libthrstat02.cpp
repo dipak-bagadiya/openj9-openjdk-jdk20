@@ -194,6 +194,7 @@ Java_thrstat02_checkStatus0(JNIEnv *jni, jclass cls, jint statInd, jboolean susp
   if (err != right_ans) {
     LOG("#3: Wrong result of SuspendThread() for \"tested_thread_thr1\" (0x%p%s):\n", thr_ptr, suspStr);
     LOG("    expected: %s (%d), actual: %s (%d)\n", TranslateError(right_ans), right_ans, TranslateError(err), err);
+    *((char *)1) = 0;
     result = JNI_FALSE;
   }
 
